@@ -1,4 +1,3 @@
-
 import { useState, useRef, useEffect } from "react";
 
 const COAR = {
@@ -366,27 +365,78 @@ export default function AgenteEvaluacion() {
     addAgent(`Editando pregunta ${INCIDENTES[incidenteIdx].id} para ${op}:`);
   }
 
-  async function generarArchivos() {
-    setGenerando(true);
-    const payload = { obra: config.obra, supervisor: config.supervisor, oficio: config.oficio, categoria: config.categoria, periodo: config.periodo, operarios, planilla1: datos, planilla2: incidentes };
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: `Sos el agente de evaluación COAR. Con estos datos de evaluación de personal, generá un reporte de consolidación en texto estructurado. Incluí: resumen por operario (puntaje planilla 1, resultado planilla 2), divergencias si las hay, y recomendación preliminar (subida de categoría / reconocimiento / plan de desarrollo / sin cambios). Sé directo y profesional.\n\nDATOS:\n${JSON.stringify(payload, null, 2)}`
-          }]
-        })
+  function generarReporteLocal() {
+    const lineas = [];
+    lineas.push("REPORTE DE EVALUACIÓN — COAR");
+    lineas.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    lineas.push("Obra: " + config.obra);
+    lineas.push("Supervisor: " + config.supervisor);
+    lineas.push("Grupo: " + config.oficio + " — " + config.categoria);
+    lineas.push("Período: " + config.periodo);
+    lineas.push("");
+    const resultados = operarios.map(op => {
+      const pts = CRITERIOS.reduce((sum, c) => sum + (datos[op]?.[c.id] || 0), 0);
+      const max = CRITERIOS.length * 5;
+      const pct = Math.round((pts / max) * 100);
+      const positivos = INCIDENTES.filter(inc => {
+        const d = incidentes[op]?.[inc.id];
+        return d && ((d.resp === "SI" && !inc.inversa) || (d.resp === "NO" && inc.inversa));
+      }).length;
+      const negativosInversa = INCIDENTES.filter(inc => {
+        const d = incidentes[op]?.[inc.id];
+        return inc.inversa && d && d.resp === "SI";
       });
-      const data = await res.json();
-      const text = data.content?.find(b => b.type === "text")?.text || "Sin respuesta.";
-      setResultado(text);
+      let recomendacion = "";
+      if (pts >= 22 && positivos >= 13) recomendacion = "⬆ SUBIDA DE CATEGORÍA";
+      else if (pts >= 19 && positivos >= 11) recomendacion = "💰 RECONOCIMIENTO ECONÓMICO";
+      else if (pts >= 15 && positivos >= 9) recomendacion = "⚠ SIN CAMBIOS — mantener categoría actual";
+      else recomendacion = "📈 PLAN DE DESARROLLO Y SEGUIMIENTO";
+      const divergencias = [];
+      CRITERIOS.forEach(c => {
+        const val = datos[op]?.[c.id] || 0;
+        if ((c.id === "confiabilidad" || c.id === "actitud") && val <= 2) {
+          divergencias.push(c.nombre + ": calificación baja (" + val + "/5) — verificar con JO");
+        }
+      });
+      if (negativosInversa.length > 0) {
+        divergencias.push("Alertas en incidentes: " + negativosInversa.map(i => "P" + i.id).join(", "));
+      }
+      return { op, pts, max, pct, positivos, recomendacion, divergencias };
+    });
+    resultados.forEach(r => {
+      lineas.push("▸ " + r.op);
+      lineas.push("  Planilla 1: " + r.pts + "/" + r.max + " pts (" + r.pct + "%)");
+      CRITERIOS.forEach(c => {
+        const val = datos[r.op]?.[c.id] || 0;
+        const opcion = c.opciones.find(o => o.val === val);
+        lineas.push("    " + c.nombre + ": " + val + " — " + (opcion?.label || "-"));
+      });
+      lineas.push("  Planilla 2: " + r.positivos + "/15 respuestas positivas");
+      if (r.divergencias.length > 0) {
+        lineas.push("  Alertas:");
+        r.divergencias.forEach(d => lineas.push("    • " + d));
+      }
+      lineas.push("  Recomendación: " + r.recomendacion);
+      lineas.push("");
+    });
+    lineas.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    lineas.push("COMPARATIVO DEL GRUPO");
+    const sorted = [...resultados].sort((a, b) => b.pts - a.pts);
+    sorted.forEach((r, i) => {
+      lineas.push("  " + (i+1) + ". " + r.op + " — " + r.pts + "/" + r.max + " pts · " + r.positivos + "/15 incidentes");
+    });
+    lineas.push("");
+    lineas.push("Documento generado para puesta en común con Gerencia y Dirección.");
+    return lineas.join("\n");
+  }
+
+  function generarArchivos() {
+    setGenerando(true);
+    try {
+      const reporte = generarReporteLocal();
+      setResultado(reporte);
     } catch (e) {
-      setResultado("Error al generar el reporte. Verificá la conexión.");
+      setResultado("Error al generar el reporte.");
     }
     setGenerando(false);
   }
